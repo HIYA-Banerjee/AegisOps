@@ -1,7 +1,10 @@
 // AegisOps DeployGuard AI — Routing and Authentication Middleware
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { isRealSupabaseAvailable } from "@/lib/supabase";
+const isRealSupabaseAvailable = !!(
+  process.env.NEXT_PUBLIC_SUPABASE_URL && 
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
 const PUBLIC_PATHS = ["/auth/login", "/auth/signup", "/auth/reset", "/auth/callback"];
 
