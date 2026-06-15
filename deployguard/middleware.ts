@@ -16,6 +16,7 @@ export async function middleware(request: NextRequest) {
   }
 
   let response = NextResponse.next({ request });
+  let user = null;
 
   if (isRealSupabaseAvailable) {
     const supabase = createServerClient(
@@ -37,58 +38,40 @@ export async function middleware(request: NextRequest) {
       }
     );
 
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user && !isAuthPage && !isApiRoute) {
-      const url = request.nextUrl.clone();
-      url.pathname = "/auth/login";
-      return NextResponse.redirect(url);
-    }
-
-    if (user && isAuthPage && PUBLIC_PATHS.includes(pathname)) {
-      const url = request.nextUrl.clone();
-      url.pathname = "/";
-      return NextResponse.redirect(url);
-    }
-
-    if (user) {
-      const role = (user.user_metadata?.role as string) || "developer";
-      response.headers.set("x-user-id", user.id);
-      response.headers.set("x-user-email", user.email || "");
-      response.headers.set("x-user-role", role);
-    }
-
-    return response;
+    const { data } = await supabase.auth.getUser();
+    user = data.user;
   }
 
-  // Mock mode: cookie-based session
-  if (isAuthPage) {
-    return NextResponse.next();
-  }
+  const mockSession = request.cookies.get("deployguard_session");
+  const isAuthenticated = !!user || !!mockSession;
 
-  const session = request.cookies.get("deployguard_session");
-  const storedRole = request.cookies.get("deployguard_role")?.value || "developer";
-  const storedUserId = request.cookies.get("deployguard_user_id")?.value || "mock-user-id";
-  const storedEmail = request.cookies.get("deployguard_user_email")?.value || "";
-
-  if (isApiRoute) {
-    if (session) {
-      response.headers.set("x-user-id", storedUserId);
-      response.headers.set("x-user-email", storedEmail);
-      response.headers.set("x-user-role", storedRole);
-    }
-    return response;
-  }
-
-  if (!session) {
+  if (!isAuthenticated && !isAuthPage && !isApiRoute) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
     return NextResponse.redirect(url);
   }
 
-  response.headers.set("x-user-id", storedUserId);
-  response.headers.set("x-user-email", storedEmail);
-  response.headers.set("x-user-role", storedRole);
+  if (isAuthenticated && isAuthPage && PUBLIC_PATHS.includes(pathname)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/";
+    return NextResponse.redirect(url);
+  }
+
+  if (isAuthenticated) {
+    if (user) {
+      const role = (user.user_metadata?.role as string) || "developer";
+      response.headers.set("x-user-id", user.id);
+      response.headers.set("x-user-email", user.email || "");
+      response.headers.set("x-user-role", role);
+    } else {
+      const storedRole = request.cookies.get("deployguard_role")?.value || "developer";
+      const storedUserId = request.cookies.get("deployguard_user_id")?.value || "mock-user-id";
+      const storedEmail = request.cookies.get("deployguard_user_email")?.value || "";
+      response.headers.set("x-user-id", storedUserId);
+      response.headers.set("x-user-email", storedEmail);
+      response.headers.set("x-user-role", storedRole);
+    }
+  }
 
   return response;
 }
