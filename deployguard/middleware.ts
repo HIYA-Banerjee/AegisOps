@@ -1,3 +1,4 @@
+// AegisOps DeployGuard AI — Routing and Authentication Middleware
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRealSupabaseAvailable } from "@/lib/supabase";
