@@ -23,27 +23,37 @@ export async function middleware(request: NextRequest) {
   let user = null;
 
   if (isRealSupabaseAvailable) {
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return request.cookies.getAll();
+    try {
+      const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
+              cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+              response = NextResponse.next({ request });
+              cookiesToSet.forEach(({ name, value, options }) =>
+                response.cookies.set(name, value, options)
+              );
+            },
           },
-          setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
-            cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-            response = NextResponse.next({ request });
-            cookiesToSet.forEach(({ name, value, options }) =>
-              response.cookies.set(name, value, options)
-            );
-          },
-        },
-      }
-    );
+        }
+      );
 
-    const { data } = await supabase.auth.getUser();
-    user = data.user;
+      // Timeout after 2.5 seconds to prevent middleware blocking if Supabase is offline/paused
+      const { data } = await Promise.race([
+        supabase.auth.getUser(),
+        new Promise<{ data: { user: null } }>((_, reject) =>
+          setTimeout(() => reject(new Error("Auth request timed out")), 2500)
+        )
+      ]);
+      user = data.user;
+    } catch (err) {
+      console.warn("Supabase auth failed in middleware (unreachable or paused):", err);
+    }
   }
 
   const mockSession = request.cookies.get("deployguard_session");
