@@ -53,16 +53,8 @@ const aiResponses: Record<string, { text: string; toolCall?: Message["toolCall"]
   }
 };
 
-function getAIResponse(question: string): { text: string; toolCall?: Message["toolCall"] } {
-  const key = suggestions.find(
-    (s) => s.toLowerCase() === question.toLowerCase()
-  );
-  if (key && aiResponses[key]) return aiResponses[key];
-  return {
-    text: `I've analyzed the current system state and the question: **"${question}"**\n\nBased on active incidents, infrastructure metrics, and deployment history, I can see several contributing factors. The current outage probability is **81%** and there are **2 active incidents** (P0: DB, P1: Memory).\n\nFor a more specific analysis, try one of the suggested questions, or describe the specific service or error you're investigating.`,
-    toolCall: { name: "queryCopilotKnowledge", args: `query="${question}"`, status: "success" }
-  };
-}
+import { generateCopilotResponse } from "@/lib/copilot-engine";
+
 
 function formatMessage(text: string) {
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|```[\s\S]*?```)/g);
@@ -96,19 +88,21 @@ export default function CopilotPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
-  const sendMsg = (text: string) => {
+  const sendMsg = async (text: string) => {
     if (!text.trim()) return;
     const ts = new Date().toLocaleTimeString();
     setMessages((m) => [...m, { role: "user", text, ts }]);
     setInput("");
     setTyping(true);
 
-    setTimeout(() => {
+    try {
+      const res = await generateCopilotResponse(text);
       setTyping(false);
-      const res = getAIResponse(text);
-      
       setMessages((m) => [...m, { role: "ai", text: res.text, ts: new Date().toLocaleTimeString(), toolCall: res.toolCall }]);
-    }, 800 + Math.random() * 500);
+    } catch (err: any) {
+      setTyping(false);
+      setMessages((m) => [...m, { role: "ai", text: `Error: ${err.message || err}`, ts: new Date().toLocaleTimeString() }]);
+    }
   };
 
   return (

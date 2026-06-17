@@ -4,7 +4,7 @@ import AppShell from "@/components/AppShell";
 import GaugeChart from "@/components/GaugeChart";
 import RiskBadge from "@/components/RiskBadge";
 import { motion } from "framer-motion";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useDeployments } from "@/hooks/useDeployments";
 import { usePredictMutation } from "@/hooks/usePrediction";
 import { useLiveMetrics } from "@/hooks/useLiveMetrics";
@@ -18,27 +18,30 @@ const modelMetrics: Record<string, { acc: string; prec: string; rec: string; f1:
   LightGBM:      { acc: "93.8%", prec: "92.0%", rec: "90.8%", f1: "91.4%", auc: "0.95" },
 };
 
-const causes = [
-  { icon: <Database size={16} />, label: "Database Migration Error", prob: 87, confidence: 92 },
-  { icon: <Code2 size={16} />, label: "Memory Leak in Payment Service", prob: 64, confidence: 78 },
-  { icon: <TestTube2 size={16} />, label: "Missing Integration Tests", prob: 41, confidence: 85 },
+// Dynamic failure cause catalogue — selected based on deployment characteristics
+const allCauses = [
+  { icon: <Database size={16} />, label: "Database Migration Timeout", condition: (d: any) => d?.failedBuilds >= 3 || d?.status === 'failed', baseProbRange: [78, 94], confidence: 92 },
+  { icon: <Code2 size={16} />, label: "Memory Leak in Service Heap", condition: (d: any) => d?.testCoverage < 70, baseProbRange: [55, 72], confidence: 78 },
+  { icon: <TestTube2 size={16} />, label: "Missing Integration Test Paths", condition: (d: any) => d?.testCoverage < 80, baseProbRange: [35, 52], confidence: 85 },
+  { icon: <Cpu size={16} />, label: "CPU Thread Pool Exhaustion", condition: (d: any) => d?.buildDuration > 400, baseProbRange: [42, 68], confidence: 81 },
+  { icon: <Database size={16} />, label: "Connection Pool Saturation", condition: (d: any) => d?.dependencyChanges > 8, baseProbRange: [48, 75], confidence: 88 },
+  { icon: <Code2 size={16} />, label: "Dependency Version Conflict", condition: (d: any) => d?.dependencyChanges > 5, baseProbRange: [30, 55], confidence: 74 },
+  { icon: <TestTube2 size={16} />, label: "Regression in Auth Code Path", condition: (d: any) => d?.commitVelocity > 25, baseProbRange: [25, 45], confidence: 70 },
+  { icon: <Cpu size={16} />, label: "OOM Kill Risk Under Load", condition: (_d: any) => true, baseProbRange: [20, 38], confidence: 65 },
 ];
 
-const shapContributorsFallback = [
-  { label: "Commit Velocity Spike (+340%)", contrib: 34, effect: "positive", desc: "Spike in deploy frequency indicates rushed releases" },
-  { label: "Test Coverage Drop (–18%)", contrib: 22, effect: "positive", desc: "Critical auth code path skipped unit tests" },
-  { label: "Failed Builds (24hr) (7 failed)", contrib: 15, effect: "positive", desc: "Unstable main branch build artifacts" },
-  { label: "Dependency Updates (12 new)", contrib: 10, effect: "positive", desc: "Untested package increments in payment-svc" },
-  { label: "Build Duration Increase (+2.4 min)", contrib: 6, effect: "positive", desc: "Possible dependency resolution slowdown" },
-  { label: "PR Review Time (23 min avg)", contrib: -2, effect: "negative", desc: "Longer review time reduces failure probability" },
-];
-
-const similarIncidents = [
-  { id: "INC-124", date: "15 Mar", similarity: "94%", cause: "DB lock on ALTER TABLE", resolution: "Rollback Migration" },
-  { id: "INC-89",  date: "28 Feb", similarity: "88%", cause: "OOM on JWT caching load", resolution: "Scaled CPU limit" },
-  { id: "INC-112", date: "10 Apr", similarity: "85%", cause: "lodash prototype pollution", resolution: "Reverted update" },
-  { id: "INC-45",  date: "05 Jan", similarity: "79%", cause: "payment-svc memory leak", resolution: "Auto-scaled +2 pods" },
-  { id: "INC-102", date: "02 Apr", similarity: "72%", cause: "API CORS lock issue", resolution: "Cleared configuration" },
+// Dynamic similar incidents that vary by deployment characteristics
+const allSimilarIncidents = [
+  { id: "INC-124", date: "15 Mar", similarity: 94, cause: "DB lock on ALTER TABLE", resolution: "Rollback Migration", tags: ["db", "migration"] },
+  { id: "INC-89",  date: "28 Feb", similarity: 88, cause: "OOM on JWT caching load", resolution: "Scaled CPU limit", tags: ["memory", "auth"] },
+  { id: "INC-112", date: "10 Apr", similarity: 85, cause: "lodash prototype pollution", resolution: "Reverted update", tags: ["dependency", "security"] },
+  { id: "INC-45",  date: "05 Jan", similarity: 79, cause: "payment-svc memory leak", resolution: "Auto-scaled +2 pods", tags: ["memory", "scaling"] },
+  { id: "INC-102", date: "02 Apr", similarity: 72, cause: "API CORS lock issue", resolution: "Cleared configuration", tags: ["config", "gateway"] },
+  { id: "INC-157", date: "22 May", similarity: 91, cause: "Schema migration deadlock", resolution: "Killed stale locks", tags: ["db", "deadlock"] },
+  { id: "INC-203", date: "08 Jun", similarity: 83, cause: "Redis eviction storm", resolution: "Increased cache TTL", tags: ["cache", "memory"] },
+  { id: "INC-178", date: "12 Apr", similarity: 76, cause: "Webhook retry flood", resolution: "Added rate limiter", tags: ["dependency", "network"] },
+  { id: "INC-94",  date: "17 Mar", similarity: 69, cause: "TLS cert rotation fail", resolution: "Manual cert deploy", tags: ["config", "security"] },
+  { id: "INC-221", date: "01 Jun", similarity: 87, cause: "gRPC channel saturation", resolution: "Connection pool resize", tags: ["network", "scaling"] },
 ];
 
 export default function PredictorPage() {
@@ -52,17 +55,69 @@ export default function PredictorPage() {
 
   const riskScore = prediction?.failureProbability ?? targetDeployment?.failureProbability ?? 87;
   const confidence = prediction?.confidenceScore ?? 92;
+  // Dynamically select causes based on current deployment characteristics
+  const causes = useMemo(() => {
+    if (!targetDeployment) return allCauses.slice(0, 3).map(c => ({ ...c, prob: c.baseProbRange[0] }));
+    const matched = allCauses.filter(c => c.condition(targetDeployment));
+    const selected = matched.slice(0, 3);
+    // Calculate probabilities proportional to risk score
+    return selected.map((c, idx) => {
+      const range = c.baseProbRange;
+      const probScale = riskScore / 100;
+      const prob = Math.round(range[0] + (range[1] - range[0]) * probScale - idx * 8);
+      return { icon: c.icon, label: c.label, prob: Math.max(15, Math.min(98, prob)), confidence: c.confidence - idx * 5 };
+    });
+  }, [targetDeployment, riskScore]);
+
+  // Select similar incidents based on deployment characteristics
+  const similarIncidents = useMemo(() => {
+    if (!targetDeployment) return allSimilarIncidents.slice(0, 5);
+    const hasFailed = targetDeployment.status === 'failed';
+    const hasDbIssue = targetDeployment.failedBuilds >= 3;
+    const hasMemIssue = targetDeployment.testCoverage < 75;
+    const hasDeps = targetDeployment.dependencyChanges > 5;
+    // Score each incident for relevance
+    const scored = allSimilarIncidents.map(inc => {
+      let relevance = inc.similarity;
+      if (hasFailed && inc.tags.includes('db')) relevance += 5;
+      if (hasDbIssue && (inc.tags.includes('db') || inc.tags.includes('deadlock'))) relevance += 8;
+      if (hasMemIssue && inc.tags.includes('memory')) relevance += 6;
+      if (hasDeps && inc.tags.includes('dependency')) relevance += 4;
+      return { ...inc, relevance, similarity: `${Math.min(99, relevance)}%` };
+    });
+    return scored.sort((a, b) => b.relevance - a.relevance).slice(0, 5);
+  }, [targetDeployment]);
+
   const shapContributors = useMemo(() => {
     if (prediction?.shapValues?.length) {
-      return prediction.shapValues.map((s) => ({
-        label: s.feature,
-        contrib: Math.round(s.impact),
-        effect: s.impact >= 0 ? "positive" as const : "negative" as const,
-        desc: prediction.why?.[0] || "Feature contribution from ML model",
-      }));
+      return prediction.shapValues.map((s) => {
+        const explanation = prediction.why?.find(w => w.toLowerCase().includes(s.feature.toLowerCase())) || 
+                           `Impact score: ${s.impact >= 0 ? "+" : ""}${Math.round(s.impact)} pts`;
+        return {
+          label: s.feature,
+          contrib: Math.round(s.impact),
+          effect: s.impact >= 0 ? "positive" as const : "negative" as const,
+          desc: explanation,
+        };
+      });
     }
-    return shapContributorsFallback;
-  }, [prediction]);
+    // Fallback: generate from deployment data rather than hardcoded values
+    if (targetDeployment) {
+      const fb: { label: string; contrib: number; effect: "positive" | "negative"; desc: string }[] = [];
+      if (targetDeployment.testCoverageDelta < 0) fb.push({ label: `Test Coverage Drop (${targetDeployment.testCoverageDelta}%)`, contrib: Math.abs(Math.round(targetDeployment.testCoverageDelta * 0.8)), effect: "positive", desc: `Coverage fell to ${targetDeployment.testCoverage}%` });
+      if (targetDeployment.failedBuilds > 0) fb.push({ label: `Failed Builds (${targetDeployment.failedBuilds} in 24hr)`, contrib: targetDeployment.failedBuilds * 5, effect: "positive", desc: "Unstable build artifacts detected" });
+      if (targetDeployment.commitVelocityDelta > 5) fb.push({ label: `Commit Velocity (+${targetDeployment.commitVelocityDelta}%)`, contrib: Math.round(targetDeployment.commitVelocityDelta * 0.7), effect: "positive", desc: "Rushed release cadence" });
+      if (targetDeployment.dependencyChanges > 3) fb.push({ label: `Dependency Changes (${targetDeployment.dependencyChanges} new)`, contrib: Math.round(targetDeployment.dependencyChanges * 1.2), effect: "positive", desc: "Untested package updates" });
+      if (targetDeployment.buildDurationDelta > 5) fb.push({ label: `Build Duration (+${targetDeployment.buildDurationDelta}%)`, contrib: Math.round(targetDeployment.buildDurationDelta * 0.5), effect: "positive", desc: "Dependency resolution slowdown" });
+      fb.push({ label: "PR Review Time (avg)", contrib: -2, effect: "negative", desc: "Longer reviews reduce failure probability" });
+      return fb.sort((a, b) => Math.abs(b.contrib) - Math.abs(a.contrib));
+    }
+    return [
+      { label: "Baseline Risk Assessment", contrib: 15, effect: "positive" as const, desc: "Standard deployment risk factor" },
+      { label: "Historical Pattern Match", contrib: 10, effect: "positive" as const, desc: "Similar past deployments" },
+      { label: "Review Quality Signal", contrib: -3, effect: "negative" as const, desc: "Good review practices detected" },
+    ];
+  }, [prediction, targetDeployment]);
 
   const runAnalysis = async () => {
     if (!targetDeployment) return;
@@ -78,6 +133,14 @@ export default function PredictorPage() {
       errorRate: liveMetrics?.errorRate,
     });
   };
+
+  useEffect(() => {
+    if (targetDeployment && liveMetrics && !prediction && !analyzing) {
+      runAnalysis();
+    }
+  }, [targetDeployment, liveMetrics, prediction, analyzing]);
+
+  const colors = ["var(--accent-red)", "var(--accent-orange)", "var(--accent-purple)", "var(--accent-cyan)", "var(--accent-blue)"];
 
   return (
     <AppShell title="AI Deployment Failure Predictor" subtitle="Explainable ML-powered risk analysis and SHAP feature contributions before every deploy">
@@ -168,7 +231,7 @@ export default function PredictorPage() {
                     <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
                       <td style={{ padding: "8px 10px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--accent-cyan)" }}>{inc.id}</td>
                       <td style={{ padding: "8px 10px", color: "var(--text-muted)" }}>{inc.date}</td>
-                      <td style={{ padding: "8px 10px", fontWeight: 800, color: parseFloat(inc.similarity) >= 85 ? "var(--accent-orange)" : "var(--accent-green)" }}>{inc.similarity}</td>
+                      <td style={{ padding: "8px 10px", fontWeight: 800, color: parseFloat(String(inc.similarity)) >= 85 ? "var(--accent-orange)" : "var(--accent-green)" }}>{inc.similarity}</td>
                       <td style={{ padding: "8px 10px", color: "var(--text-secondary)" }}>{inc.cause}</td>
                       <td style={{ padding: "8px 10px" }}>
                         <span style={{ padding: "2px 6px", borderRadius: 4, background: "var(--accent-green-glow)", color: "var(--accent-green)", fontSize: 9, fontWeight: 700 }}>
@@ -208,7 +271,6 @@ export default function PredictorPage() {
         {/* Right Column: Explainable AI Results */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Failure Prob card */}
-          {/* Failure Prob card */}
           <motion.div className="card" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} style={{ padding: "24px 32px", textAlign: "center" }}>
             <div className="section-label" style={{ textAlign: "center" }}>Failure Probability</div>
             <div style={{ display: "flex", justifyContent: "center", margin: "12px 0" }}>
@@ -247,9 +309,9 @@ export default function PredictorPage() {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 10 }}>
               {[
-                { label: "1 Hr Horizon", val: "86%", color: "var(--accent-orange)" },
-                { label: "6 Hr Horizon", val: "91%", color: "var(--accent-red)" },
-                { label: "24 Hr Horizon", val: "95%", color: "var(--accent-red)" }
+                { label: "1 Hr Horizon", val: `${Math.min(99, Math.round(riskScore * 0.98))}%`, color: "var(--accent-orange)" },
+                { label: "6 Hr Horizon", val: `${Math.min(99, Math.round(riskScore * 1.04))}%`, color: "var(--accent-red)" },
+                { label: "24 Hr Horizon", val: `${Math.min(99, Math.round(riskScore * 1.09))}%`, color: "var(--accent-red)" }
               ].map((h, idx) => (
                 <div key={idx} style={{ 
                   background: "var(--bg-input)", 
@@ -270,47 +332,53 @@ export default function PredictorPage() {
           <motion.div className="card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div>
-                <div className="section-label" style={{ marginBottom: 2 }}>Why 87%?</div>
+                <div className="section-label" style={{ marginBottom: 2 }}>Why {riskScore}%?</div>
                 <p style={{ fontSize: 10, color: "var(--text-muted)" }}>Feature Importance Attribution Graph</p>
               </div>
-              <span style={{ fontSize: 9, padding: "3px 8px", borderRadius: 4, background: "var(--accent-red-glow)", color: "var(--accent-red)", fontWeight: 700 }}>
-                EXPLAINABLE AI (XAI)
-              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {prediction?.model && (
+                  <span style={{ fontSize: 9, padding: "3px 8px", borderRadius: 4, background: "var(--accent-cyan-glow)", color: "var(--accent-cyan)", fontWeight: 700, textTransform: "uppercase" }}>
+                    MODEL: {prediction.model}
+                  </span>
+                )}
+                <span style={{ fontSize: 9, padding: "3px 8px", borderRadius: 4, background: "var(--accent-red-glow)", color: "var(--accent-red)", fontWeight: 700 }}>
+                  EXPLAINABLE AI (XAI)
+                </span>
+              </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {[
-                { label: "Test Coverage Drop", contrib: 34, effect: "+34%", desc: "Critical authentication path skipped integration specs", color: "var(--accent-red)" },
-                { label: "Failed Builds", contrib: 22, effect: "+22%", desc: "Multiple consecutive CI pipeline breakages in past 24h", color: "var(--accent-orange)" },
-                { label: "Dependency Changes", contrib: 18, effect: "+18%", desc: "Added 12 unverified npm libraries to payment service", color: "var(--accent-purple)" },
-                { label: "Commit Velocity Spike", contrib: 13, effect: "+13%", desc: "Sudden rush of commits from multiple developers", color: "var(--accent-cyan)" },
-                { label: "Build Duration Increase", contrib: 8, effect: "+8%", desc: "Webpack profiling shows 2.4 min build overhead", color: "var(--accent-blue)" }
-              ].map((c, i) => (
-                <div key={i}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                    <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>{c.label}</span>
-                    <span style={{ fontWeight: 800, color: c.color }}>{c.effect}</span>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center" }}>
-                    <div className="progress-bar" style={{ height: 8, background: "var(--bg-input)" }}>
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${c.contrib * 2.5}%` }}
-                        transition={{ duration: 1.2, delay: 0.3 + i * 0.05 }}
-                        style={{
-                          height: "100%",
-                          borderRadius: 3,
-                          background: c.color,
-                        }}
-                      />
+              {shapContributors.map((c, i) => {
+                const color = colors[i % colors.length];
+                const displayEffect = c.contrib >= 0 ? `+${c.contrib}%` : `${c.contrib}%`;
+                return (
+                  <div key={i}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+                      <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>{c.label}</span>
+                      <span style={{ fontWeight: 800, color: color }}>{displayEffect}</span>
                     </div>
-                    <span style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {c.desc}
-                    </span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10, alignItems: "center" }}>
+                      <div className="progress-bar" style={{ height: 8, background: "var(--bg-input)" }}>
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min(100, Math.abs(c.contrib) * 2.5)}%` }}
+                          transition={{ duration: 1.2, delay: 0.3 + i * 0.05 }}
+                          style={{
+                            height: "100%",
+                            borderRadius: 3,
+                            background: color,
+                          }}
+                        />
+                      </div>
+                      <span style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {c.desc}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </motion.div>
+
 
           {/* Predicted Failure Causes */}
           <motion.div className="card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>

@@ -3,8 +3,35 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 venv/
+
+# Environment variables
 .env
+.env.local
+.env*.local
+
+# Node.js
+node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+
+# Build outputs
+out/
+build/
+dist/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Scratch / test files
+deployguard/scratch/
+deployguard/dev-server.log

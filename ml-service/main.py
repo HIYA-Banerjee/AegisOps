@@ -94,12 +94,29 @@ def simulate(payload: dict):
     exp_type = payload.get("experimentType", "traffic_spike")
     target = payload.get("targetService", "auth-service")
     intensity = payload.get("intensity", 5)
+    
+    cpu_inc = round(intensity * 4.5 + 2.0, 1)
+    mem_inc = round(intensity * 3.8 + 1.5, 1)
+    risk = min(intensity * 12, 95)
+    
+    warnings = []
+    if cpu_inc > 30:
+        warnings.append(f"High CPU utilization warning on {target} node pool")
+    if mem_inc > 25:
+        warnings.append("Memory pressure detected on target service pods")
+    if risk > 60:
+        warnings.append("High failure risk: SLA breach probable")
+        
     return {
         "success": True,
         "experimentType": exp_type,
         "targetService": target,
-        "blastRadius": [f"{target} (direct)", "gateway-service (latency +{intensity * 3}%)"],
+        "blastRadius": [f"{target} (direct)", f"gateway-service (latency +{intensity * 3}%)"],
         "predictedLatencyMs": 50 + intensity * 20,
         "predictedMttrMin": 5 + intensity * 2,
-        "failureRisk": min(intensity * 12, 95),
+        "failureRisk": risk,
+        "cpuIncrease": cpu_inc,
+        "memIncrease": mem_inc,
+        "why": f"Heavy load simulation on {target} increases queuing time and CPU thread contention, leading to latency spikes.",
+        "warnings": warnings,
     }

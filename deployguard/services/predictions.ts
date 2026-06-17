@@ -41,6 +41,13 @@ export interface SimulationResult {
   blastRadius: string[];
   metricsTimeline: { time: string; latency: number; errorRate: number }[];
   recoverySteps: string[];
+  failureRisk?: number;
+  predictedLatency?: number;
+  predictedMttrMin?: number;
+  cpuIncrease?: number;
+  memIncrease?: number;
+  why?: string;
+  warnings?: string[];
 }
 
 export async function runSimulation(params: SimulationParams): Promise<SimulationResult> {
